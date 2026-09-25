@@ -6,16 +6,24 @@
 
 class HandoverManager {
 public:
-    HandoverManager(double signalThresholdDb);
+    HandoverManager(
+        double signalThresholdDb,
+        double maxCandidateUtilization,
+        double maxLatencyMs,
+        double maxPacketLossRate
+    );
 
-    const Cell& selectBestCell(
-        const Cell& currentCell,
-        const Cell& candidateCell,
+    Cell& selectBestCell(
+        Cell& currentCell,
+        Cell& candidateCell,
         const UserEquipment& ue
     ) const;
 
 private:
     double signalThresholdDb;
+    double maxCandidateUtilization;
+    double maxLatencyMs;
+    double maxPacketLossRate;
 };
 
 #endif

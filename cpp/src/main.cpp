@@ -1,10 +1,14 @@
+#include <fstream>
 #include <iostream>
 
 #include "Cell.h"
 #include "UserEquipment.h"
 #include "HandoverManager.h"
 
-void printSignal(const Cell& cell, const UserEquipment& ue) {
+void printCellStatus(
+    const Cell& cell,
+    const UserEquipment& ue
+) {
     std::cout
         << cell.getId()
         << " | distance = "
@@ -12,10 +16,45 @@ void printSignal(const Cell& cell, const UserEquipment& ue) {
         << " | signal = "
         << cell.calculateSignalDbm(ue.getX(), ue.getY())
         << " dBm"
+        << " | latency = "
+        << cell.getLatencyMs()
+        << " ms"
+        << " | packet loss = "
+        << cell.getPacketLossRate() * 100
+        << "%"
+        << " | utilization = "
+        << cell.getUtilization() * 100
+        << "%"
         << std::endl;
 }
 
 int main() {
+
+        // -------------------------
+    // Open CSV output file
+    // -------------------------
+    std::ofstream csvFile("../data/simulation_results.csv");
+
+    if (!csvFile.is_open()) {
+        std::cerr
+            << "Error: could not open CSV output file."
+            << std::endl;
+
+        return 1;
+    }
+
+    csvFile
+        << "time,"
+        << "serving_cell,"
+        << "cell_a_signal,"
+        << "cell_b_signal,"
+        << "cell_a_utilization,"
+        << "cell_b_utilization,"
+        << "cell_a_latency,"
+        << "cell_b_latency,"
+        << "cell_a_packet_loss,"
+        << "cell_b_packet_loss"
+        << "\n";
 
     // -------------------------
     // Create Cell A
@@ -26,9 +65,9 @@ int main() {
         0.0,
         100.0,
         -50.0,
-        15.0,
-        0.01,
-        100
+        15.0,      // latency: 15 ms
+        0.01,      // packet loss: 1%
+        100        // capacity
     );
 
     // -------------------------
@@ -40,10 +79,21 @@ int main() {
         0.0,
         100.0,
         -50.0,
-        20.0,
-        0.02,
+        20.0,      // latency: 20 ms
+        0.02,      // packet loss: 2%
         100
-    );
+    );  
+
+    // Simulate Cell B being heavily congested
+    for (int i = 0; i < 50; i++) {
+        cellB.connectUser();
+    }
+
+    std::cout
+        << "Cell-B utilization: "
+        << cellB.getUtilization() * 100
+        << "%"
+        << std::endl;
 
     // -------------------------
     // Create mobile UE
@@ -57,14 +107,26 @@ int main() {
     );
 
     // -------------------------
-    // Create handover manager
-    // 3 dB = minimum advantage
-    // required for handover
+    // UE initially connected
+    // to Cell A
     // -------------------------
-    HandoverManager handoverManager(3.0);
+    Cell* servingCell = &cellA;
+    servingCell->connectUser();
 
-    // UE initially connected to Cell A
-    const Cell* servingCell = &cellA;
+    // -------------------------
+    // Create handover manager
+    //
+    // 3.0  = minimum signal advantage
+    // 0.80 = maximum candidate utilization
+    // 30.0 = maximum latency
+    // 0.05 = maximum packet loss (5%)
+    // -------------------------
+    HandoverManager handoverManager(
+        3.0,
+        0.80,
+        30.0,
+        0.05
+    );
 
     // -------------------------
     // SIMULATION LOOP
@@ -77,6 +139,24 @@ int main() {
             << " seconds ==="
             << std::endl;
 
+            // Simulate Cell A failure at 15 seconds.
+    if (time == 15) {
+        cellA.setAvailable(false);
+
+        std::cout
+            << "FAILURE: Cell-A is now unavailable"
+            << std::endl;
+    }
+
+        // Simulate Cell A recovery at 25 seconds.
+    if (time == 25) {
+        cellA.setAvailable(true);
+
+        std::cout
+            << "RECOVERY: Cell-A is available again"
+            << std::endl;
+    }
+
         std::cout
             << "UE position: ("
             << ue.getX()
@@ -85,12 +165,13 @@ int main() {
             << ")"
             << std::endl;
 
-        // Show signal from both cells
-        printSignal(cellA, ue);
-        printSignal(cellB, ue);
+        // Show complete network status
+        // for both cells.
+        printCellStatus(cellA, ue);
+        printCellStatus(cellB, ue);
 
-        // Determine which cell is the candidate
-        const Cell* candidateCell;
+        // Determine which cell is the candidate.
+        Cell* candidateCell;
 
         if (servingCell == &cellA) {
             candidateCell = &cellB;
@@ -98,15 +179,17 @@ int main() {
             candidateCell = &cellA;
         }
 
-        // Ask HandoverManager which cell should serve the UE
-        const Cell& selectedCell =
+
+        // Ask HandoverManager whether
+        // the candidate should serve the UE.
+        Cell& selectedCell =
             handoverManager.selectBestCell(
                 *servingCell,
                 *candidateCell,
                 ue
             );
 
-        // Check whether a handover happened
+        // Check whether a handover happened.
         if (selectedCell.getId() != servingCell->getId()) {
 
             std::cout
@@ -116,6 +199,11 @@ int main() {
                 << selectedCell.getId()
                 << std::endl;
 
+            // Update connection counts.
+            servingCell->disconnectUser();
+            selectedCell.connectUser();
+
+            // Update serving cell.
             servingCell = &selectedCell;
 
         } else {
@@ -126,9 +214,25 @@ int main() {
                 << std::endl;
         }
 
-        // Move UE forward by 5 seconds
+                // -------------------------
+        // Write simulation data
+        // -------------------------
+        csvFile
+            << time << ","
+            << servingCell->getId() << ","
+            << cellA.calculateSignalDbm(ue.getX(), ue.getY()) << ","
+            << cellB.calculateSignalDbm(ue.getX(), ue.getY()) << ","
+            << cellA.getUtilization() << ","
+            << cellB.getUtilization() << ","
+            << cellA.getLatencyMs() << ","
+            << cellB.getLatencyMs() << ","
+            << cellA.getPacketLossRate() << ","
+            << cellB.getPacketLossRate()
+            << "\n";
+
+        // Move UE forward by 5 seconds.
         ue.move(5.0);
     }
-
+        csvFile.close();
     return 0;
 }

@@ -29,11 +29,19 @@ public:
     int getCapacity() const;
     int getConnectedUsers() const;
 
+    void connectUser();
+    void disconnectUser();
+
+    double getUtilization() const;
+
     bool contains(double x, double y) const;
 
     // ADD THESE TWO LINES
     double distanceTo(double userX, double userY) const;
     double calculateSignalDbm(double userX, double userY) const;
+
+    void setAvailable(bool available);
+    bool isAvailable() const;
 
 private:
     std::string id;
@@ -49,6 +57,8 @@ private:
 
     int capacity;
     int connectedUsers;
+
+    bool available;
 };
 
 #endif

@@ -21,7 +21,8 @@ Cell::Cell(
       latencyMs(latencyMs),
       packetLossRate(packetLossRate),
       capacity(capacity),
-      connectedUsers(0) {
+      connectedUsers(0),
+      available(true) {
 }
 
 std::string Cell::getId() const {
@@ -84,4 +85,32 @@ double Cell::calculateSignalDbm(double userX, double userY) const {
     }
 
     return baseSignalDbm - (20.0 * std::log10(distance));
+}
+
+void Cell::connectUser() {
+    if (connectedUsers < capacity) {
+        connectedUsers++;
+    }
+}
+
+void Cell::disconnectUser() {
+    if (connectedUsers > 0) {
+        connectedUsers--;
+    }
+}
+
+double Cell::getUtilization() const {
+    if (capacity == 0) {
+        return 1.0;
+    }
+
+    return static_cast<double>(connectedUsers) / capacity;
+}
+
+void Cell::setAvailable(bool available) {
+    this->available = available;
+}
+
+bool Cell::isAvailable() const {
+    return available;
 }
