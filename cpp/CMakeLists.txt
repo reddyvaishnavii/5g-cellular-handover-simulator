@@ -11,4 +11,12 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_executable(cellular_simulator
     src/main.cpp
+    src/Cell.cpp
+    src/UserEquipment.cpp
+    src/HandoverManager.cpp
+)
+
+target_include_directories(cellular_simulator
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
