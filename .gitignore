@@ -88,4 +88,4 @@ data/*.csv
 # Generated analysis results
 results/*
 !results/.gitkeep
-!results/signal_strength.png
+!results/signal_strength.pngbuild-release/

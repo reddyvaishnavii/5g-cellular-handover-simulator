@@ -1,45 +1,63 @@
 #include <fstream>
 #include <iostream>
+#include <string>
+#include <vector>
 
 #include "Cell.h"
 #include "UserEquipment.h"
 #include "HandoverManager.h"
 
-void printCellStatus(
-    const Cell& cell,
-    const UserEquipment& ue
-) {
+namespace {
+
+// Simulation settings (change these in one place).
+const double kTimeStepSeconds     = 5.0;
+const double kDurationSeconds     = 30.0;
+const double kFailureTimeSeconds  = 15.0;   // Cell-A goes down
+const double kRecoveryTimeSeconds = 25.0;   // Cell-A comes back
+
+const char* reasonToString(DecisionReason reason) {
+    switch (reason) {
+        case DecisionReason::StayBestAvailable:    return "StayBestAvailable";
+        case DecisionReason::WaitingTimeToTrigger: return "WaitingTimeToTrigger";
+        case DecisionReason::SignalHandover:       return "SignalHandover";
+        case DecisionReason::EmergencyFailover:    return "EmergencyFailover";
+        case DecisionReason::NoServiceAvailable:   return "NoServiceAvailable";
+    }
+    return "Unknown";
+}
+
+void printCellStatus(const Cell& cell, const UserEquipment& ue) {
     std::cout
         << cell.getId()
-        << " | distance = "
-        << cell.distanceTo(ue.getX(), ue.getY())
-        << " | signal = "
-        << cell.calculateSignalDbm(ue.getX(), ue.getY())
+        << " | distance = " << cell.distanceTo(ue.getX(), ue.getY())
+        << " | signal = " << cell.calculateSignalDbm(ue.getX(), ue.getY())
         << " dBm"
-        << " | latency = "
-        << cell.getLatencyMs()
-        << " ms"
-        << " | packet loss = "
-        << cell.getPacketLossRate() * 100
-        << "%"
-        << " | utilization = "
-        << cell.getUtilization() * 100
-        << "%"
+        << " | latency = " << cell.getLatencyMs() << " ms"
+        << " | packet loss = " << cell.getPacketLossRate() * 100 << "%"
+        << " | utilization = " << cell.getUtilization() * 100 << "%"
+        << " | " << (cell.isAvailable() ? "UP" : "DOWN")
         << std::endl;
 }
 
-int main() {
+}  // namespace
 
-        // -------------------------
-    // Open CSV output file
+int main(int argc, char* argv[]) {
+
     // -------------------------
-    std::ofstream csvFile("../data/simulation_results.csv");
+    // Open CSV output file
+    // Usage: ./sim [output.csv]
+    // Default path assumes you run from the build/ folder.
+    // -------------------------
+    const std::string csvPath =
+        (argc > 1) ? argv[1] : "../data/simulation_results.csv";
+
+    std::ofstream csvFile(csvPath);
 
     if (!csvFile.is_open()) {
         std::cerr
-            << "Error: could not open CSV output file."
+            << "Error: could not open CSV output file: "
+            << csvPath
             << std::endl;
-
         return 1;
     }
 
@@ -53,11 +71,12 @@ int main() {
         << "cell_a_latency,"
         << "cell_b_latency,"
         << "cell_a_packet_loss,"
-        << "cell_b_packet_loss"
+        << "cell_b_packet_loss,"
+        << "decision_reason"
         << "\n";
 
     // -------------------------
-    // Create Cell A
+    // Create cells
     // -------------------------
     Cell cellA(
         "Cell-A",
@@ -70,9 +89,6 @@ int main() {
         100        // capacity
     );
 
-    // -------------------------
-    // Create Cell B
-    // -------------------------
     Cell cellB(
         "Cell-B",
         150.0,
@@ -82,9 +98,9 @@ int main() {
         20.0,      // latency: 20 ms
         0.02,      // packet loss: 2%
         100
-    );  
+    );
 
-    // Simulate Cell B being heavily congested
+    // Simulate Cell B being moderately congested
     for (int i = 0; i < 50; i++) {
         cellB.connectUser();
     }
@@ -94,6 +110,10 @@ int main() {
         << cellB.getUtilization() * 100
         << "%"
         << std::endl;
+
+    // The manager looks at every cell in this list.
+    // Adding Cell-C later is just: allCells.push_back(&cellC);
+    std::vector<Cell*> allCells = { &cellA, &cellB };
 
     // -------------------------
     // Create mobile UE
@@ -106,20 +126,20 @@ int main() {
         0.0
     );
 
-    // -------------------------
-    // UE initially connected
-    // to Cell A
-    // -------------------------
+    // UE initially connected to Cell A
     Cell* servingCell = &cellA;
     servingCell->connectUser();
 
     // -------------------------
-    // Create handover manager
+    // Create handover manager (one per UE, it keeps the TTT timer)
     //
-    // 3.0  = minimum signal advantage
+    // 3.0  = minimum signal advantage (dB)
     // 0.80 = maximum candidate utilization
-    // 30.0 = maximum latency
+    // 30.0 = maximum latency (ms)
     // 0.05 = maximum packet loss (5%)
+    // Optional extras:
+    //   5th arg = time-to-trigger in seconds (0 = off)
+    //   6th arg = minimum usable signal in dBm
     // -------------------------
     HandoverManager handoverManager(
         3.0,
@@ -131,7 +151,15 @@ int main() {
     // -------------------------
     // SIMULATION LOOP
     // -------------------------
-    for (int time = 0; time <= 30; time += 5) {
+    bool failureDone  = false;
+    bool recoveryDone = false;
+
+    const int steps =
+        static_cast<int>(kDurationSeconds / kTimeStepSeconds + 0.5);
+
+    for (int step = 0; step <= steps; step++) {
+
+        const double time = step * kTimeStepSeconds;
 
         std::cout
             << "\n=== Time: "
@@ -139,23 +167,25 @@ int main() {
             << " seconds ==="
             << std::endl;
 
-            // Simulate Cell A failure at 15 seconds.
-    if (time == 15) {
-        cellA.setAvailable(false);
+        // Simulate Cell A failure.
+        if (!failureDone && time >= kFailureTimeSeconds) {
+            cellA.setAvailable(false);
+            failureDone = true;
 
-        std::cout
-            << "FAILURE: Cell-A is now unavailable"
-            << std::endl;
-    }
+            std::cout
+                << "FAILURE: Cell-A is now unavailable"
+                << std::endl;
+        }
 
-        // Simulate Cell A recovery at 25 seconds.
-    if (time == 25) {
-        cellA.setAvailable(true);
+        // Simulate Cell A recovery.
+        if (!recoveryDone && time >= kRecoveryTimeSeconds) {
+            cellA.setAvailable(true);
+            recoveryDone = true;
 
-        std::cout
-            << "RECOVERY: Cell-A is available again"
-            << std::endl;
-    }
+            std::cout
+                << "RECOVERY: Cell-A is available again"
+                << std::endl;
+        }
 
         std::cout
             << "UE position: ("
@@ -165,56 +195,50 @@ int main() {
             << ")"
             << std::endl;
 
-        // Show complete network status
-        // for both cells.
-        printCellStatus(cellA, ue);
-        printCellStatus(cellB, ue);
-
-        // Determine which cell is the candidate.
-        Cell* candidateCell;
-
-        if (servingCell == &cellA) {
-            candidateCell = &cellB;
-        } else {
-            candidateCell = &cellA;
+        // Show complete network status for every cell.
+        for (const Cell* cell : allCells) {
+            printCellStatus(*cell, ue);
         }
 
-
-        // Ask HandoverManager whether
-        // the candidate should serve the UE.
-        Cell& selectedCell =
-            handoverManager.selectBestCell(
+        // Ask the HandoverManager where the UE should be.
+        HandoverDecision decision =
+            handoverManager.decide(
                 *servingCell,
-                *candidateCell,
-                ue
+                allCells,
+                ue,
+                time
             );
 
-        // Check whether a handover happened.
-        if (selectedCell.getId() != servingCell->getId()) {
+        if (decision.isHandover()) {
 
             std::cout
-                << "HANDOVER: "
+                << "HANDOVER ("
+                << reasonToString(decision.reason)
+                << "): "
                 << servingCell->getId()
                 << " -> "
-                << selectedCell.getId()
+                << decision.target->getId()
                 << std::endl;
 
             // Update connection counts.
             servingCell->disconnectUser();
-            selectedCell.connectUser();
+            decision.target->connectUser();
 
             // Update serving cell.
-            servingCell = &selectedCell;
+            servingCell = decision.target;
 
         } else {
 
             std::cout
                 << "STAY: "
                 << servingCell->getId()
+                << " ("
+                << reasonToString(decision.reason)
+                << ")"
                 << std::endl;
         }
 
-                // -------------------------
+        // -------------------------
         // Write simulation data
         // -------------------------
         csvFile
@@ -227,12 +251,14 @@ int main() {
             << cellA.getLatencyMs() << ","
             << cellB.getLatencyMs() << ","
             << cellA.getPacketLossRate() << ","
-            << cellB.getPacketLossRate()
+            << cellB.getPacketLossRate() << ","
+            << reasonToString(decision.reason)
             << "\n";
 
-        // Move UE forward by 5 seconds.
-        ue.move(5.0);
+        // Move UE forward by one time step.
+        ue.move(kTimeStepSeconds);
     }
-        csvFile.close();
+
+    csvFile.close();
     return 0;
 }

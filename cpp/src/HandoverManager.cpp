@@ -4,76 +4,105 @@ HandoverManager::HandoverManager(
     double signalThresholdDb,
     double maxCandidateUtilization,
     double maxLatencyMs,
-    double maxPacketLossRate
+    double maxPacketLossRate,
+    double timeToTriggerSeconds,
+    double minSignalDbm
 )
     : signalThresholdDb(signalThresholdDb),
       maxCandidateUtilization(maxCandidateUtilization),
       maxLatencyMs(maxLatencyMs),
-      maxPacketLossRate(maxPacketLossRate) {
+      maxPacketLossRate(maxPacketLossRate),
+      timeToTriggerSeconds(timeToTriggerSeconds),
+      minSignalDbm(minSignalDbm) {
 }
 
-Cell& HandoverManager::selectBestCell(
-    Cell& currentCell,
-    Cell& candidateCell,
-    const UserEquipment& ue
+bool HandoverManager::isHealthy(const Cell& cell) const {
+    return cell.isAvailable()
+        && cell.getUtilization() < maxCandidateUtilization
+        && cell.getLatencyMs() <= maxLatencyMs
+        && cell.getPacketLossRate() <= maxPacketLossRate;
+}
+
+Cell* HandoverManager::bestBySignal(
+    const std::vector<Cell*>& cells,
+    const UserEquipment& ue,
+    const Cell* exclude,
+    bool requireHealthy
 ) const {
+    Cell* best = nullptr;
+    double bestSignal = -std::numeric_limits<double>::infinity();
 
-    double currentSignal =
-        currentCell.calculateSignalDbm(
-            ue.getX(),
-            ue.getY()
-        );
+    for (Cell* cell : cells) {
+        if (cell == nullptr || cell == exclude) continue;
+        if (!cell->isAvailable()) continue;
+        if (requireHealthy && !isHealthy(*cell)) continue;
 
-    double candidateSignal =
-        candidateCell.calculateSignalDbm(
-            ue.getX(),
-            ue.getY()
-        );
+        double signal = cell->calculateSignalDbm(ue.getX(), ue.getY());
+        if (signal < minSignalDbm) continue;
 
-    double candidateUtilization =
-        candidateCell.getUtilization();
+        if (best == nullptr || signal > bestSignal) {
+            best = cell;
+            bestSignal = signal;
+        }
+    }
+    return best;
+}
 
-    double candidateLatency =
-        candidateCell.getLatencyMs();
+void HandoverManager::resetTrigger() {
+    triggerTarget = nullptr;
+    triggerStartSeconds = 0.0;
+}
 
-    double candidatePacketLoss =
-        candidateCell.getPacketLossRate();
+HandoverDecision HandoverManager::decide(
+    Cell& serving,
+    const std::vector<Cell*>& allCells,
+    const UserEquipment& ue,
+    double nowSeconds
+) {
+    // 1) Serving cell is down -> emergency failover.
+    //    Prefer a healthy cell, but a degraded cell beats a dead one.
+    if (!serving.isAvailable()) {
+        resetTrigger();
 
-    // Reject an unavailable candidate cell.
-    if (!candidateCell.isAvailable()) {
-        return currentCell;
+        Cell* target = bestBySignal(allCells, ue, &serving, true);
+        if (target == nullptr) {
+            target = bestBySignal(allCells, ue, &serving, false);
+        }
+        if (target != nullptr) {
+            return {target, DecisionReason::EmergencyFailover};
+        }
+        return {&serving, DecisionReason::NoServiceAvailable};
     }
 
-    // Reject an overloaded candidate cell.
-    if (candidateUtilization >= maxCandidateUtilization) {
-        return currentCell;
+    // 2) Normal case: best healthy neighbour must beat serving by the offset.
+    Cell* best = bestBySignal(allCells, ue, &serving, true);
+
+    double servingSignal = serving.calculateSignalDbm(ue.getX(), ue.getY());
+    bool hasAdvantage =
+        best != nullptr &&
+        best->calculateSignalDbm(ue.getX(), ue.getY()) >
+            servingSignal + signalThresholdDb;
+
+    if (!hasAdvantage) {
+        resetTrigger();   // condition stopped holding -> restart the timer
+        return {&serving, DecisionReason::StayBestAvailable};
     }
 
-    // Reject a candidate with excessive latency.
-    if (candidateLatency > maxLatencyMs) {
-        return currentCell;
+    // 3) Time-to-trigger: advantage must hold continuously for TTT seconds.
+    if (timeToTriggerSeconds <= 0.0) {
+        resetTrigger();
+        return {best, DecisionReason::SignalHandover};
     }
 
-    // Reject a candidate with excessive packet loss.
-    if (candidatePacketLoss > maxPacketLossRate) {
-        return currentCell;
+    if (triggerTarget != best) {
+        triggerTarget = best;
+        triggerStartSeconds = nowSeconds;
     }
 
-    // Emergency failover:
-    // If the serving cell has failed, move to the
-    // available candidate without requiring a signal advantage.
-    if (!currentCell.isAvailable()) {
-        return candidateCell;
+    if (nowSeconds - triggerStartSeconds >= timeToTriggerSeconds) {
+        resetTrigger();
+        return {best, DecisionReason::SignalHandover};
     }
 
-    // Normal handover:
-    // Require the candidate to have a meaningful
-    // signal advantage before handing over.
-    if (candidateSignal >
-        currentSignal + signalThresholdDb) {
-
-        return candidateCell;
-    }
-
-    return currentCell;
+    return {&serving, DecisionReason::WaitingTimeToTrigger};
 }
